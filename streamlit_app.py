@@ -2,81 +2,65 @@ import streamlit as st
 from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 
-st.set_page_config(page_title="Gestión Charcutería BI", page_icon="🧀", layout="wide")
+st.set_page_config(page_title="Gestión Charcutería BI", layout="wide")
 
+# Conexión optimizada
 conn = st.connection("gsheets", type=GSheetsConnection)
 
+@st.cache_data(ttl=60) # Esto hace que la app sea mucho más rápida
 def load_data():
-    df_c = conn.read(worksheet="COSTES", ttl=0)
-    df_p = conn.read(worksheet="PROVEEDORES", ttl=0)
-    
-    df_c.columns = [str(c).strip().upper() for c in df_c.columns]
-    df_p.columns = [str(c).strip().upper() for c in df_p.columns]
-    
-    col_n = next((c for c in df_c.columns if 'NOMBRE' in c or 'ARTICULO' in c), None)
-    
+    # Cargamos solo lo necesario
+    df = conn.read(worksheet="COSTES")
+    # Limpieza rápida de columnas
+    df.columns = [str(c).strip().upper() for c in df.columns]
+    # Buscamos la columna del nombre
+    col_n = next((c for c in df.columns if 'NOMBRE' in c or 'ARTICULO' in c), None)
     if col_n:
-        # Solo nos quedamos con filas que tengan nombre y que NO sean el encabezado repetido
-        df_c = df_c.dropna(subset=[col_n])
-        df_c = df_c[df_c[col_n].str.len() > 0]
-        
-    return df_c, df_p, col_n
+        # Quitamos filas vacías de golpe
+        df = df.dropna(subset=[col_n])
+        df = df[df[col_n].str.strip() != ""]
+    return df, col_n
 
 try:
-    df_c, df_p, col_nombre = load_data()
+    df_c, col_nombre = load_data()
 
-    st.sidebar.title("Charcutería Control")
-    menu = st.sidebar.radio("Navegación:", ["Escandallos", "Proveedores"])
+    st.title("🧀 Control de Márgenes")
 
-    if menu == "Escandallos":
-        st.header("⚖️ Análisis de Margen y Costes")
-        
-        lista_articulos = sorted([str(a) for a in df_c[col_nombre].unique() if str(a) != 'nan' and str(a).strip() != ''])
-        
-        art = st.selectbox("Selecciona un artículo:", ["--- Selecciona un producto ---"] + lista_articulos)
-        
-        if art != "--- Selecciona un producto ---":
-            filas = df_c[df_c[col_nombre] == art]
+    if col_nombre:
+        opciones = sorted(df_c[col_nombre].unique())
+        art = st.selectbox("Elegir Producto:", ["--- Toca aquí para buscar ---"] + opciones)
+
+        if art != "--- Toca aquí para buscar ---":
+            datos = df_c[df_c[col_nombre] == art].iloc[0]
+
+            # Función ultra-rápida para números
+            def n(key):
+                c = next((col for col in df_c.columns if key in col), None)
+                if c:
+                    v = str(datos[c]).replace(',', '.').replace('€', '').strip()
+                    try: return float(v)
+                    except: return 0.0
+                return 0.0
+
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Coste Real", f"{n('REAL'):.2f} €")
+            c2.metric("PVP Tienda", f"{n('TIENDA'):.2f} €")
             
-            if not filas.empty:
-                d = filas.iloc[0]
+            sup = n('SUPERAVIT')
+            c3.metric("Superávit", f"{sup:.2f} €", delta=f"{sup:.2f}", delta_color="normal" if sup >=0 else "inverse")
 
-                def clean_num(key):
-                    col = next((c for c in df_c.columns if key in c), None)
-                    if col:
-                        val = str(d[col]).replace(',', '.').replace('€', '').strip()
-                        try:
-                            return float(val)
-                        except:
-                            return 0.0
-                    return 0.0
-
-                c_base = clean_num('COSTE BASE') or clean_num('PRECIO COSTE')
-                c_real = clean_num('COSTE REAL')
-                p_tienda = clean_num('PRECIO TIENDA')
-                sup = clean_num('SUPERAVIT')
-
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Coste Base", f"{c_base:,.2f} €")
-                c2.metric("Coste Real", f"{c_real:,.2f} €")
-                c3.metric("Precio Tienda", f"{p_tienda:,.2f} €")
-
-                st.divider()
-
-                if p_tienda > 0:
-                    margen = ((p_tienda - c_real) / p_tienda) * 100
-                    st.info(f"El margen real actual es del **{margen:.1f}%**")
-                
-                if sup < 0:
-                    st.error(f"⚠️ Alerta: Pierdes {abs(sup):.2f}€ respecto al objetivo.")
-                else:
-                    st.success(f"✅ Superávit de {sup:.2f}€ sobre objetivo.")
-            else:
-                st.warning("No se han encontrado datos para este artículo.")
-
-    elif menu == "Proveedores":
-        st.header("📞 Directorio")
-        st.dataframe(df_p.dropna(how='all'), use_container_width=True)
+            # Cálculo de margen
+            p_tienda = n('TIENDA')
+            c_real = n('REAL')
+            if p_tienda > 0:
+                margen = ((p_tienda - c_real) / p_tienda) * 100
+                st.info(f"Margen actual: **{margen:.1f}%**")
+    
+    if st.button("🔄 Actualizar Datos"):
+        st.cache_data.clear()
+        st.rerun()
 
 except Exception as e:
-    st.info("Cargando base de datos... Selecciona un producto para empezar.")
+    st.error("Conectando con el Excel...")
+    st.stop()
+    
